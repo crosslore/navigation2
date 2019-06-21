@@ -13,106 +13,186 @@
 // limitations under the License.
 
 #include "dwb_controller/dwb_controller.hpp"
-#include <string>
+
 #include <chrono>
 #include <memory>
+#include <string>
+
 #include "dwb_core/exceptions.hpp"
 #include "nav_2d_utils/conversions.hpp"
+#include "nav2_util/node_utils.hpp"
+#include "dwb_controller/progress_checker.hpp"
 
 using namespace std::chrono_literals;
-using std::shared_ptr;
-using nav2_tasks::TaskStatus;
-using dwb_core::DWBLocalPlanner;
-using dwb_core::CostmapROSPtr;
 
-#define NO_OP_DELETER [] (auto) {}
-
-namespace nav2_dwb_controller
+namespace dwb_controller
 {
 
-DwbController::DwbController(rclcpp::executor::Executor & executor)
-: Node("DwbController"),
-  tfBuffer_(get_clock()),
-  tfListener_(tfBuffer_)
+DwbController::DwbController()
+: LifecycleNode("dwb_controller", "", true)
 {
-  auto temp_node = std::shared_ptr<rclcpp::Node>(this, [](auto) {});
+  RCLCPP_INFO(get_logger(), "Creating");
 
-  cm_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>("local_costmap", tfBuffer_);
-  executor.add_node(cm_);
-  odom_sub_ = std::make_shared<nav_2d_utils::OdomSubscriber>(*this);
-  vel_pub_ =
-    this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 1);
-
-  auto nh = shared_from_this();
-  planner_.initialize(nh, shared_ptr<tf2_ros::Buffer>(&tfBuffer_, NO_OP_DELETER), cm_);
-
-  task_server_ = std::make_unique<nav2_tasks::FollowPathTaskServer>(temp_node);
-  task_server_->setExecuteCallback(
-    std::bind(&DwbController::followPath, this, std::placeholders::_1));
+  costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>("local_costmap");
+  costmap_thread_ = std::make_unique<std::thread>(
+    [](rclcpp_lifecycle::LifecycleNode::SharedPtr node)
+    {rclcpp::spin(node->get_node_base_interface());}, costmap_ros_);
 }
 
 DwbController::~DwbController()
 {
+  RCLCPP_INFO(get_logger(), "Destroying");
+  costmap_thread_->join();
 }
 
-TaskStatus
-DwbController::followPath(const nav2_tasks::FollowPathCommand::SharedPtr command)
+nav2_util::CallbackReturn
+DwbController::on_configure(const rclcpp_lifecycle::State & state)
 {
-  RCLCPP_INFO(get_logger(), "Starting controller");
-  try {
-    auto path = nav_2d_utils::pathToPath2D(*command);
+  RCLCPP_INFO(get_logger(), "Configuring");
 
-    planner_.setPlan(path);
-    RCLCPP_INFO(get_logger(), "Initialized");
+  costmap_ros_->on_configure(state);
+
+  auto node = shared_from_this();
+
+  planner_ = std::make_unique<dwb_core::DWBLocalPlanner>(
+    node, costmap_ros_->getTfBuffer(), costmap_ros_);
+  planner_->on_configure(state);
+
+  odom_sub_ = std::make_shared<nav_2d_utils::OdomSubscriber>(*this);
+  vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 1);
+
+  // Create the action server that we implement with our followPath method
+  action_server_ = std::make_unique<ActionServer>(rclcpp_node_, "FollowPath",
+      std::bind(&DwbController::followPath, this, std::placeholders::_1));
+
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+nav2_util::CallbackReturn
+DwbController::on_activate(const rclcpp_lifecycle::State & state)
+{
+  RCLCPP_INFO(get_logger(), "Activating");
+
+  planner_->on_activate(state);
+  costmap_ros_->on_activate(state);
+  vel_pub_->on_activate();
+
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+nav2_util::CallbackReturn
+DwbController::on_deactivate(const rclcpp_lifecycle::State & state)
+{
+  RCLCPP_INFO(get_logger(), "Deactivating");
+
+  planner_->on_deactivate(state);
+  costmap_ros_->on_deactivate(state);
+  vel_pub_->on_deactivate();
+
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+nav2_util::CallbackReturn
+DwbController::on_cleanup(const rclcpp_lifecycle::State & state)
+{
+  RCLCPP_INFO(get_logger(), "Cleaning up");
+
+  // Cleanup the helper classes
+  planner_->on_cleanup(state);
+  costmap_ros_->on_cleanup(state);
+
+  // Release any allocated resources
+  planner_.reset();
+  odom_sub_.reset();
+  vel_pub_.reset();
+  action_server_.reset();
+
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+nav2_util::CallbackReturn
+DwbController::on_error(const rclcpp_lifecycle::State &)
+{
+  RCLCPP_FATAL(get_logger(), "Lifecycle node entered error state");
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+nav2_util::CallbackReturn
+DwbController::on_shutdown(const rclcpp_lifecycle::State &)
+{
+  RCLCPP_INFO(get_logger(), "Shutting down");
+  return nav2_util::CallbackReturn::SUCCESS;
+}
+
+void
+DwbController::followPath(const std::shared_ptr<GoalHandle> goal_handle)
+{
+  RCLCPP_INFO(get_logger(), "Received a goal, begin following path");
+  auto result = std::make_shared<nav2_msgs::action::FollowPath::Result>();
+
+  std::shared_ptr<GoalHandle> current_goal_handle = goal_handle;
+
+  rclcpp::Rate loop_rate(100ms);    // period vs. hz
+
+  auto goal = current_goal_handle->get_goal();
+
+  try {
+    auto path = nav_2d_utils::pathToPath2D(goal->path);
+
+    RCLCPP_DEBUG(get_logger(), "Providing path to the local planner");
+    planner_->setPlan(path);
+
+    ProgressChecker progress_checker(rclcpp_node_);
 
     rclcpp::Rate loop_rate(10);
     while (rclcpp::ok()) {
       nav_2d_msgs::msg::Pose2DStamped pose2d;
       if (!getRobotPose(pose2d)) {
-        RCLCPP_INFO(get_logger(), "No pose. Stopping robot");
+        RCLCPP_INFO(get_logger(), "No pose. Stopping the robot");
         publishZeroVelocity();
       } else {
         if (isGoalReached(pose2d)) {
+          RCLCPP_INFO(get_logger(), "Reached the goal");
           break;
         }
+        progress_checker.check(pose2d);
         auto velocity = odom_sub_->getTwist();
-        auto cmd_vel_2d = planner_.computeVelocityCommands(pose2d, velocity);
-        publishVelocity(cmd_vel_2d);
-        RCLCPP_INFO(get_logger(), "Publishing velocity at time %.2f", now().seconds());
+        auto cmd_vel_2d = planner_->computeVelocityCommands(pose2d, velocity);
 
-        // Check if this task has been canceled
-        if (task_server_->cancelRequested()) {
-          RCLCPP_INFO(this->get_logger(), "execute: task has been canceled");
-          task_server_->setCanceled();
+        RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
+        publishVelocity(cmd_vel_2d);
+
+        if (current_goal_handle->is_canceling()) {
+          RCLCPP_INFO(this->get_logger(), "Canceling execution of the local planner");
+          current_goal_handle->canceled(result);
           publishZeroVelocity();
-          return TaskStatus::CANCELED;
+          return;
         }
 
         // Check if there is an update to the path to follow
-        if (task_server_->updateRequested()) {
-          // Get the new, updated path
-          auto path_cmd = std::make_shared<nav2_tasks::FollowPathCommand>();
-          task_server_->getCommandUpdate(path_cmd);
-          task_server_->setUpdated();
+        if (action_server_->preempt_requested()) {
+          RCLCPP_DEBUG(get_logger(), "Received a new goal, pre-empting the old one");
+          current_goal_handle = action_server_->get_updated_goal_handle();
+          goal = current_goal_handle->get_goal();
 
-          // and pass it to the local planner
-          auto path = nav_2d_utils::pathToPath2D(*path_cmd);
-          planner_.setPlan(path);
+          // If so, pass the new path to the local planner
+          auto path = nav_2d_utils::pathToPath2D(goal->path);
+          planner_->setPlan(path);
         }
       }
+
       loop_rate.sleep();
     }
   } catch (nav_core2::PlannerException & e) {
-    RCLCPP_INFO(this->get_logger(), e.what());
+    RCLCPP_ERROR(this->get_logger(), e.what());
     publishZeroVelocity();
-    return TaskStatus::FAILED;
+    current_goal_handle->abort(result);
+    return;
   }
 
-  nav2_tasks::FollowPathResult result;
-  task_server_->setResult(result);
+  RCLCPP_DEBUG(get_logger(), "DWB succeeded, setting result");
+  current_goal_handle->succeed(result);
   publishZeroVelocity();
-
-  return TaskStatus::SUCCEEDED;
 }
 
 void DwbController::publishVelocity(const nav_2d_msgs::msg::Twist2DStamped & velocity)
@@ -127,19 +207,20 @@ void DwbController::publishZeroVelocity()
   velocity.velocity.x = 0;
   velocity.velocity.y = 0;
   velocity.velocity.theta = 0;
+
   publishVelocity(velocity);
 }
 
 bool DwbController::isGoalReached(const nav_2d_msgs::msg::Pose2DStamped & pose2d)
 {
   nav_2d_msgs::msg::Twist2D velocity = odom_sub_->getTwist();
-  return planner_.isGoalReached(pose2d, velocity);
+  return planner_->isGoalReached(pose2d, velocity);
 }
 
 bool DwbController::getRobotPose(nav_2d_msgs::msg::Pose2DStamped & pose2d)
 {
   geometry_msgs::msg::PoseStamped current_pose;
-  if (!cm_->getRobotPose(current_pose)) {
+  if (!costmap_ros_->getRobotPose(current_pose)) {
     RCLCPP_ERROR(this->get_logger(), "Could not get robot pose");
     return false;
   }
@@ -147,4 +228,4 @@ bool DwbController::getRobotPose(nav_2d_msgs::msg::Pose2DStamped & pose2d)
   return true;
 }
 
-}  // namespace nav2_dwb_controller
+}  // namespace dwb_controller

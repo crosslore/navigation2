@@ -15,35 +15,41 @@
 #ifndef NAV2_TASKS__COMPUTE_PATH_TO_POSE_ACTION_HPP_
 #define NAV2_TASKS__COMPUTE_PATH_TO_POSE_ACTION_HPP_
 
-#include <string>
 #include <memory>
-#include "nav2_tasks/bt_conversions.hpp"
+#include <string>
+
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_tasks/bt_action_node.hpp"
-#include "nav2_tasks/compute_path_to_pose_task.hpp"
-#include "geometry_msgs/msg/point.hpp"
-#include "geometry_msgs/msg/quaternion.hpp"
 
 namespace nav2_tasks
 {
 
-class ComputePathToPoseAction
-  : public BtActionNode<ComputePathToPoseCommand, ComputePathToPoseResult>
+class ComputePathToPoseAction : public BtActionNode<nav2_msgs::action::ComputePathToPose>
 {
 public:
   explicit ComputePathToPoseAction(const std::string & action_name)
-  : BtActionNode<ComputePathToPoseCommand, ComputePathToPoseResult>(action_name)
+  : BtActionNode<nav2_msgs::action::ComputePathToPose>(action_name)
   {
   }
 
-  void onInit() override
+  void on_tick() override
   {
-    BtActionNode<ComputePathToPoseCommand, ComputePathToPoseResult>::onInit();
-
-    command_ =
-      blackboard()->template get<nav2_tasks::ComputePathToPoseCommand::SharedPtr>("goal");
-
-    result_ = blackboard()->template get<nav2_tasks::ComputePathToPoseResult::SharedPtr>("path");
+    goal_.pose = *(blackboard()->get<geometry_msgs::msg::PoseStamped::SharedPtr>("goal"));
   }
+
+  void on_success() override
+  {
+    *(blackboard()->get<nav2_msgs::msg::Path::SharedPtr>("path")) = result_.result->path;
+
+    if (first_time_) {
+      first_time_ = false;
+    } else {
+      blackboard()->set<bool>("path_updated", true);  // NOLINT
+    }
+  }
+
+private:
+  bool first_time_{true};
 };
 
 }  // namespace nav2_tasks

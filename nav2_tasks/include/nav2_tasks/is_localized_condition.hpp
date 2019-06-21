@@ -17,10 +17,12 @@
 
 #include <string>
 #include <memory>
-#include "rclcpp/rclcpp.hpp"
+
 #include "behaviortree_cpp/condition_node.h"
-#include "nav2_robot/robot.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "nav2_util/lifecycle_node.hpp"
+#include "nav2_robot/robot.hpp"
+#include "rclcpp/rclcpp.hpp"
 
 namespace nav2_tasks
 {
@@ -37,34 +39,37 @@ public:
 
   ~IsLocalizedCondition()
   {
+    cleanup();
   }
 
   BT::NodeStatus tick() override
   {
     if (!initialized_) {
-      // Get the required items from the blackboard
-      node_ = blackboard()->template get<rclcpp::Node::SharedPtr>("node");
-
-      node_->get_parameter_or<double>("is_localized_condition.x_tol", x_tol_, 0.25);
-      node_->get_parameter_or<double>("is_localized_condition.y_tol", y_tol_, 0.25);
-      node_->get_parameter_or<double>("is_localized_condition.rot_tol", rot_tol_, M_PI / 4);
-
-      robot_ = std::make_unique<nav2_robot::Robot>(node_);
-
-      initialized_ = true;
+      initialize();
     }
 
-    if (isLocalized()) {
-      return BT::NodeStatus::SUCCESS;
-    }
-    return BT::NodeStatus::FAILURE;
+    return isLocalized() ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
   }
 
-  bool
-  isLocalized()
+  void initialize()
+  {
+    node_ = blackboard()->template get<rclcpp::Node::SharedPtr>("node");
+    node_->get_parameter_or<double>("is_localized_condition.x_tol", x_tol_, 0.25);
+    node_->get_parameter_or<double>("is_localized_condition.y_tol", y_tol_, 0.25);
+    node_->get_parameter_or<double>("is_localized_condition.rot_tol", rot_tol_, M_PI / 4);
+    robot_ = std::make_unique<nav2_robot::Robot>(
+      node_->get_node_base_interface(),
+      node_->get_node_topics_interface(),
+      node_->get_node_logging_interface(),
+      true);
+    initialized_ = true;
+  }
+
+  bool isLocalized()
   {
     auto current_pose = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>();
 
+    rclcpp::spin_some(node_);
     if (!robot_->getCurrentPose(current_pose)) {
       RCLCPP_DEBUG(node_->get_logger(), "Current robot pose is not available.");
       return false;
@@ -82,6 +87,12 @@ public:
     }
 
     return false;
+  }
+
+protected:
+  void cleanup()
+  {
+    robot_.reset();
   }
 
 private:

@@ -4,6 +4,8 @@ project(nav2_motion_primitives)
 find_package(ament_cmake REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav2_tasks REQUIRED)
 find_package(nav2_util REQUIRED)
@@ -25,6 +27,8 @@ set(executable_name ${library_name}_node)
 
 set(dependencies
   rclcpp
+  rclcpp_action
+  rclcpp_lifecycle
   std_msgs
   nav2_util
   nav2_tasks
@@ -40,7 +44,6 @@ set(dependencies
 add_library(${library_name}
   src/spin.cpp
   src/back_up.cpp
-  src/stop.cpp
 )
 
 ament_target_dependencies(${library_name}
@@ -69,8 +72,11 @@ install(DIRECTORY include/
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  add_subdirectory(test)
 endif()
 
 ament_export_include_directories(include)

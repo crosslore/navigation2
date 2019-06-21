@@ -19,9 +19,8 @@
 #include <memory>
 #include <cmath>
 
-#include "nav2_tasks/bt_conversions.hpp"
 #include "nav2_tasks/bt_action_node.hpp"
-#include "nav2_tasks/spin_task.hpp"
+#include "nav2_msgs/action/spin.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.h"
@@ -29,27 +28,21 @@
 namespace nav2_tasks
 {
 
-class SpinAction : public BtActionNode<SpinCommand, SpinResult>
+class SpinAction : public BtActionNode<nav2_msgs::action::Spin>
 {
 public:
   explicit SpinAction(const std::string & action_name)
-  : BtActionNode<SpinCommand, SpinResult>(action_name)
+  : BtActionNode<nav2_msgs::action::Spin>(action_name)
   {
   }
 
-  void onInit() override
+  void on_init() override
   {
-    BtActionNode<SpinCommand, SpinResult>::onInit();
-
-    // Create the input and output messages
-    command_ = std::make_shared<nav2_tasks::SpinCommand>();
-    result_ = std::make_shared<nav2_tasks::SpinResult>();
-
     // TODO(orduno) #423 Fixed spin angle
     // Rotate 90deg CCW
     tf2::Quaternion quaternion;
     quaternion.setRPY(0, 0, M_PI / 2);  // yaw, pitch and roll are rotation in z, y, x respectively
-    command_->quaternion = tf2::toMsg(quaternion);
+    goal_.target.quaternion = tf2::toMsg(quaternion);
   }
 };
 
