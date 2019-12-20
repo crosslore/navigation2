@@ -30,9 +30,7 @@ nav2_package()
 
 include_directories(
   include
-  ${ament_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
-  ${laser_geometry_INCLUDE_DIRS}
 )
 
 add_definitions(${EIGEN3_DEFINITIONS})
@@ -50,6 +48,9 @@ add_library(nav2_costmap_2d_core SHARED
   src/observation_buffer.cpp
   src/clear_costmap_service.cpp
 )
+
+# prevent pluginlib from using boost
+target_compile_definitions(nav2_costmap_2d_core PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 
 set(dependencies
   geometry_msgs
@@ -90,9 +91,27 @@ target_link_libraries(layers
   nav2_costmap_2d_core
 )
 
+add_library(nav2_costmap_2d_client SHARED
+  src/footprint_subscriber.cpp
+  src/costmap_subscriber.cpp
+  src/collision_checker.cpp
+)
+
+ament_target_dependencies(nav2_costmap_2d_client
+  ${dependencies}
+)
+
+target_link_libraries(nav2_costmap_2d_client
+  nav2_costmap_2d_core
+)
+
 add_executable(nav2_costmap_2d_markers src/costmap_2d_markers.cpp)
 target_link_libraries(nav2_costmap_2d_markers
   nav2_costmap_2d_core
+)
+
+ament_target_dependencies(nav2_costmap_2d_markers
+  ${dependencies}
 )
 
 add_executable(nav2_costmap_2d_cloud src/costmap_2d_cloud.cpp)
@@ -110,7 +129,7 @@ target_link_libraries(nav2_costmap_2d
   layers
 )
 
-install(TARGETS nav2_costmap_2d_core nav2_costmap_2d layers
+install(TARGETS nav2_costmap_2d_core nav2_costmap_2d layers nav2_costmap_2d_client nav2_costmap_2d_markers
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -131,13 +150,12 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
-  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
   add_subdirectory(test)
 endif()
 
 ament_export_include_directories(include)
-ament_export_libraries(layers nav2_costmap_2d_core)
+ament_export_libraries(layers nav2_costmap_2d_core nav2_costmap_2d_client)
 ament_export_dependencies(${dependencies})
 pluginlib_export_plugin_description_file(nav2_costmap_2d costmap_plugins.xml)
 ament_package()

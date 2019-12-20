@@ -8,13 +8,13 @@ find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(nav2_tasks REQUIRED)
+find_package(nav2_behavior_tree REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
-find_package(behaviortree_cpp REQUIRED)
+find_package(behaviortree_cpp_v3 REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(nav2_robot REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 nav2_package()
 
@@ -32,8 +32,6 @@ set(library_name ${executable_name}_core)
 
 add_library(${library_name} SHARED
   src/bt_navigator.cpp
-  src/navigate_to_pose_behavior_tree.cpp
-  src/recovery_node.cpp
 )
 
 set(dependencies
@@ -42,13 +40,13 @@ set(dependencies
   rclcpp_lifecycle
   std_msgs
   geometry_msgs
-  nav2_tasks
+  nav2_behavior_tree
   nav_msgs
   nav2_msgs
-  behaviortree_cpp
+  behaviortree_cpp_v3
   std_srvs
-  nav2_robot
   nav2_util
+  tf2_ros
 )
 
 ament_target_dependencies(${executable_name}
@@ -71,9 +69,7 @@ install(DIRECTORY include/
   DESTINATION include/
 )
 
-install(DIRECTORY behavior_trees/
-  DESTINATION behavior_trees/
-)
+install(DIRECTORY behavior_trees DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

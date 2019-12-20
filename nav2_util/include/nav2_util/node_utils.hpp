@@ -33,6 +33,14 @@ namespace nav2_util
  */
 std::string sanitize_node_name(const std::string & potential_node_name);
 
+/// Concatenate two namespaces to produce an absolute namespace
+/**
+ * \param[in] top_ns The namespace to place first
+ * \param[in] sub_ns The namespace to place after top_ns
+ * \return An absolute namespace starting with "/"
+*/
+std::string add_namespaces(const std::string & top_ns, const std::string & sub_ns = "");
+
 /// Add some random characters to a node name to ensure it is unique in the system
 /**
  * There are utility classes that create an internal private node to interact
@@ -71,6 +79,19 @@ std::string time_to_string(size_t len);
 
 rclcpp::NodeOptions
 get_node_options_default(bool allow_undeclared = true, bool declare_initial_params = true);
+
+template<typename NodeT>
+void declare_parameter_if_not_declared(
+  NodeT node,
+  const std::string & param_name,
+  const rclcpp::ParameterValue & default_value = rclcpp::ParameterValue(),
+  const rcl_interfaces::msg::ParameterDescriptor & parameter_descriptor =
+  rcl_interfaces::msg::ParameterDescriptor())
+{
+  if (!node->has_parameter(param_name)) {
+    node->declare_parameter(param_name, default_value, parameter_descriptor);
+  }
+}
 
 }  // namespace nav2_util
 

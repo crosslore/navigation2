@@ -32,9 +32,8 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "message_filters/subscriber.h"
 #include "nav2_util/lifecycle_node.hpp"
-#include "nav2_util/map_service_client.hpp"
-#include "nav2_util/motion_model/motion_model.hpp"
-#include "nav2_util/sensors/laser/laser.hpp"
+#include "nav2_amcl/motion_model/motion_model.hpp"
+#include "nav2_amcl/sensors/laser/laser.hpp"
 #include "nav_msgs/srv/set_map.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_srvs/srv/empty.hpp"
@@ -71,11 +70,26 @@ protected:
   // respond until we're in the active state
   std::atomic<bool> active_{false};
 
+  // Pose hypothesis
+  typedef struct
+  {
+    double weight;             // Total weight (weights sum to 1)
+    pf_vector_t pf_pose_mean;  // Mean of pose esimate
+    pf_matrix_t pf_pose_cov;   // Covariance of pose estimate
+  } amcl_hyp_t;
+
   // Map-related
-  void initMap();
-  nav2_util::MapServiceClient map_client_{"amcl"};
+  void mapReceived(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+  void handleMapMessage(const nav_msgs::msg::OccupancyGrid & msg);
+  void createFreeSpaceVector();
+  void freeMapDependentMemory();
   map_t * map_{nullptr};
   map_t * convertMap(const nav_msgs::msg::OccupancyGrid & map_msg);
+  bool first_map_only_{true};
+  std::atomic<bool> first_map_received_{false};
+  amcl_hyp_t * initial_pose_hyp_;
+  std::recursive_mutex configuration_mutex_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::ConstSharedPtr map_sub_;
 #if NEW_UNIFORM_SAMPLING
   static std::vector<std::pair<int, int>> free_space_indices;
 #endif
@@ -122,11 +136,11 @@ protected:
     std::shared_ptr<std_srvs::srv::Empty::Response> response);
 
   // Nomotion update control. Used to temporarily let amcl update samples even when no motion occurs
-  bool force_update_{false};
+  std::atomic<bool> force_update_{false};
 
   // Odometry
   void initOdometry();
-  std::unique_ptr<nav2_util::MotionModel> motion_model_;
+  std::unique_ptr<nav2_amcl::MotionModel> motion_model_;
   geometry_msgs::msg::PoseStamped latest_odom_pose_;
   geometry_msgs::msg::PoseWithCovarianceStamped last_published_pose_;
   double init_pose_[3];  // Initial robot pose
@@ -137,7 +151,6 @@ protected:
     double & x, double & y, double & yaw,
     const rclcpp::Time & sensor_timestamp, const std::string & frame_id);
   std::atomic<bool> first_pose_sent_;
-  std::atomic<bool> amcl_node_ready_;
 
   // Particle filter
   void initParticleFilter();
@@ -151,9 +164,9 @@ protected:
   // Laser scan related
   void initLaserScan();
   const char * scan_topic_{"scan"};
-  nav2_util::Laser * createLaserObject();
+  nav2_amcl::Laser * createLaserObject();
   int scan_error_count_{0};
-  std::vector<nav2_util::Laser *> lasers_;
+  std::vector<nav2_amcl::Laser *> lasers_;
   std::vector<bool> lasers_update_;
   std::map<std::string, int> frame_to_laser_;
   rclcpp::Time last_laser_received_ts_;
@@ -162,14 +175,6 @@ protected:
 
   bool checkElapsedTime(std::chrono::seconds check_interval, rclcpp::Time last_time);
   rclcpp::Time last_time_printed_msg_;
-
-  // Pose hypothesis
-  typedef struct
-  {
-    double weight;             // Total weight (weights sum to 1)
-    pf_vector_t pf_pose_mean;  // Mean of pose esimate
-    pf_matrix_t pf_pose_cov;   // Covariance of pose estimate
-  } amcl_hyp_t;
 
   bool addNewScanner(
     int & laser_index,
@@ -193,9 +198,15 @@ protected:
     const std::vector<amcl_hyp_t> & hyps,
     const int & max_weight_hyp);
   void sendMapToOdomTransform(const tf2::TimePoint & transform_expiration);
-  void handleInitialPose(geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
+  void handleInitialPose(geometry_msgs::msg::PoseWithCovarianceStamped & msg);
   bool init_pose_received_on_inactive{false};
   bool initial_pose_is_known_{false};
+  bool set_initial_pose_{false};
+  bool always_reset_initial_pose_;
+  double initial_pose_x_;
+  double initial_pose_y_;
+  double initial_pose_z_;
+  double initial_pose_yaw_;
 
   // Node parameters (initialized via initParameters)
   void initParameters();

@@ -19,7 +19,6 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav2_lifecycle_manager REQUIRED)
 find_package(nav2_msgs REQUIRED)
-find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Test Concurrent)
@@ -31,10 +30,12 @@ find_package(rviz_ogre_vendor REQUIRED)
 find_package(rviz_rendering REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 set(nav2_rviz_plugins_headers_to_moc
+  include/nav2_rviz_plugins/goal_pose_updater
+  include/nav2_rviz_plugins/goal_common
   include/nav2_rviz_plugins/goal_tool.hpp
-  include/nav2_rviz_plugins/navigation_dialog.hpp
   include/nav2_rviz_plugins/nav2_panel.hpp
 )
 
@@ -45,7 +46,6 @@ include_directories(
 set(library_name ${PROJECT_NAME})
 
 add_library(${library_name} SHARED
-  src/navigation_dialog.cpp
   src/goal_tool.cpp
   src/nav2_panel.cpp
   ${nav2_rviz_plugins_headers_to_moc}
@@ -56,9 +56,8 @@ set(dependencies
   nav2_util
   nav2_lifecycle_manager
   nav2_msgs
-  nav2_msgs
   nav_msgs
-  pluginglib
+  pluginlib
   Qt5
   rclcpp
   rclcpp_lifecycle
@@ -105,11 +104,6 @@ install(
 install(
   DIRECTORY include/
   DESTINATION include/
-)
-
-install(
-  DIRECTORY "${CMAKE_SOURCE_DIR}/icons"
-  DESTINATION "share/${PROJECT_NAME}"
 )
 
 if(BUILD_TESTING)

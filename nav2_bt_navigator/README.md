@@ -1,10 +1,10 @@
 # BT Navigator
 
-The BT Navigator (Behavior Tree Navigator) module implements the [NavigateToPose task interface](../nav2_tasks/include/nav2_tasks/navigate_to_pose_task.hpp). It is a [Behavior Tree](https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/docs/BT_basics.md)-based implementation of navigation that is intended to allow for flexibility in the navigation task and provide a way to easily specify complex robot behaviors, including [recovery](#recovery).
+The BT Navigator (Behavior Tree Navigator) module implements the [NavigateToPose task interface](../nav2_behavior_tree/include/nav2_behavior_tree/navigate_to_pose_action.hpp). It is a [Behavior Tree](https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/docs/BT_basics.md)-based implementation of navigation that is intended to allow for flexibility in the navigation task and provide a way to easily specify complex robot behaviors, including [recovery](#recovery).
 
 ## Overview
 
-The BT Navigator receives a goal pose and navigates the robot to the specified destination. To do so, the module reads an XML description of the Behavior Tree from a file, as specified by a Node parameter, and passes that to a generic [BehaviorTreeEngine class](../nav2_tasks/include/nav2_tasks/behavior_tree_engine.hpp) which uses the [Behavior-Tree.CPP library](https://github.com/BehaviorTree/BehaviorTree.CPP) to dynamically create and execute the BT.
+The BT Navigator receives a goal pose and navigates the robot to the specified destination. To do so, the module reads an XML description of the Behavior Tree from a file, as specified by a Node parameter, and passes that to a generic [BehaviorTreeEngine class](../nav2_behavior_tree/include/nav2_behavior_tree/behavior_tree_engine.hpp) which uses the [Behavior-Tree.CPP library](https://github.com/BehaviorTree/BehaviorTree.CPP) to dynamically create and execute the BT.
 
 ## Specifying an input XML file
 
@@ -18,148 +18,94 @@ BtNavigator:
 
 Using the XML filename as a parameter makes it easy to change or extend the logic used for navigation. Once can simply update the XML description for the BT and the BtNavigator task server will use the new description.
 
+## Behavior Tree nodes
+
+A Behavior Tree consists of control flow nodes, such as fallback, sequence, parallel, and decorator, as well as two execution nodes: condition and action nodes. Execution nodes are the leaf nodes of the tree. When a leaf node is ticked, the node does some work and it returns either SUCCESS, FAILURE or RUNNING.  The current Navigation2 software implements a few custom nodes, including Conditions and Actions. The user can also define and register additional node types that can then be used in BTs and the corresponding XML descriptions.
+
 ## Navigation Behavior Trees
 
-The BT Navigator package has a few sample XML-based descriptions of BTs.
+The BT Navigator package has two sample XML-based descriptions of BTs.  These trees are [navigate_w_replanning.xml](behavior_trees/navigate_w_replanning.xml) and [navigate_w_replanning_and_recovery.xml](behavior_trees/navigate_w_replanning_and_recovery.xml).  The user may use any of these sample trees or develop a more complex tree which could better suit the user's needs.
 
-### Simple sequential invocation of planning and control
+### Navigate with Replanning
 
-[Simple_sequential.xml](behavior_trees/simple_sequential.xml) implements a basic navigation by first computing the path and then following the path.
-
-```XML
-<root main_tree_to_execute="MainTree">
-  <BehaviorTree ID="MainTree">
-    <SequenceStar name="root">
-      <ComputePathToPose goal="${goal}" path="${path}"/>
-      <FollowPath path="${path}"/>
-    </SequenceStar>
-  </BehaviorTree>
-</root>
-```
-
-The graphical version of this Behavior Tree:
-
-<img src="./doc/simple.png" title="Simple Navigation Behavior Tree" align="middle">
-
-**ComputePathToPose** gets the incoming goal pose from the blackboard, computes the path and puts the result back on the blackboard, where **FollowPath** picks it up.
-
-### Parallel planning and control
-
-An alternative approach is to run planning and control in parallel. [Parallel.xml](behavior_trees/parallel.xml) implements one possible BT for doing this:
+[navigate_w_replanning.xml](behavior_trees/navigate_w_replanning.xml) implements basic navigation by continuously computing and updating the path at a rate of 1Hz. The default controller, the nav2_dwb_controller, implements path following at a rate of 10Hz.
 
 ```XML
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <SequenceStar name="root">
-      <ComputePathToPose goal="${goal}" path="${path}"/>
-      <ParallelNode threshold="1">
-        <FollowPath path="${path}"/>
-        <Sequence>
-          <RateController hz="1.0">
-            <ComputePathToPose goal="${goal}" path="${path}"/>
-          </RateController>
-          <UpdatePath/>
-        </Sequence>
-      </ParallelNode>
-    </SequenceStar>
+    <Sequence name="root">
+      <RateController hz="1.0">
+        <Fallback>
+          <GoalReached/>
+          <ComputePathToPose goal="${goal}" planner_id="GridBased"/>
+        </Fallback>
+      </RateController>
+      <FollowPath path="${path}" controller_id="FollowPath"/>
+    </Sequence>
   </BehaviorTree>
 </root>
 ```
 
-The graphical version of this Behavior Tree:
+Navigate with replanning is composed of the following custom decorator, condition,
+contro and action nodes:
 
-<img src="./doc/parallel.png" title="Parallel version of the Navigation Behavior Tree" align="middle">
+#### Control Nodes
+* PipelineSequence: This is a variant of a Sequence Node. When this node is ticked,
+it will tick the first child till it succeeds. Then it will tick the first two
+children till the second one succeeds. Then it will tick the first three till the
+third succeeds and so on, till there are no more children. This will return RUNNING,
+till the last child succeeds, at which time it also returns SUCCESS. If any child
+returns FAILURE, all nodes are halted and this node returns FAILURE.
+* RoundRobin: This is a custom control node introduced to the Behavior Tree. When this node is ticked, it will tick the first child until it returns SUCCESS or FAILURE. If the child returns either SUCCESS or FAILURE, it will tick its next child. Once the node reaches the last child, it will restart ticking from the first child. The main difference between the RoundRobin node versus the Sequence node is that when a child returns FAILURE the RoundRobin node will tick the next child but in the Sequence node, it will return FAILURE.
 
-In this case, the BT first calls **ComputePathToPose** to generate an initial path. It then runs **FollowPath** and a rate-controlled **ComputePathToPose** in parallel. The **RateController** node specifies how frequently the **ComputePathToPose** task should be invoked. Each time a new path is computed, it is sent to the local planner/controller using **UpdatePath**.
+* Recovery: This is a control flow type node with two children.  It returns success if and only if the first child returns success. The second child will be executed only if the first child returns failure.  The second child is responsible for recovery actions such as re-initializing system or other recovery behaviors. If the recovery behaviors are succeeded, then the first child will be executed again.  The user can specify how many times the recovery actions should be taken before returning failure. The figure below depicts a simple recovery node.
 
-## Recovery Behavior Trees
-
-With Behavior Trees, a recovery pattern can be implemented using [fallback](https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/docs/FallbackNode.md) and [recovery](https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/docs/DecoratorNode.md) nodes. For example, on the diagram below, branch "A" contains a retry node `R` in series with a fallback node `?*`. If the leaf node **SomeTask** returns *Fail*, the fallback node will tick **SomeSequence** which could execute an alternative approach to accomplish the task. If **SomeSequence** also returns *Fail*, the retry node will tick again the "A" branch before returning *Fail* to the parent node. This pattern can be used for any number of tasks, as shown for branches "B" and "C".
-
-<img src="./doc/recovery1.png" title="" width="95%" align="middle">
+<img src="./doc/recovery_node.png" title="" width="40%" align="middle">
 <br/>
 
-The pattern described above can be extended to check for preconditions before attempting **SomeTask**. For example, the BT below will initially tick the node leaf **HasIssues?**. If it returns *Fail*, meaning it failed to detect the issue, the [inverter](https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/docs/DecoratorNode.md) `!` will report *Success* and **SomeTask** will be ticked (after ticking its parent nodes). However, if it returns *Success*, meaning it did detect an issue, a sequence of nodes **DoA**, **DoB**, **DoC** will be ticked, which possibly execute a sequence of corrective actions. Notice that if any of these report *Fail* it will propagate to the root node possibly halting execution.
 
-<br/>
-<img src="./doc/recovery2.png" title="" width="95%" align="middle">
-<br/>
-
-There are versions of the navigation BTs, [simple_sequential_w_recovery.xml](behavior_trees/simple_sequential_w_recovery.xml) and [parallel_w_recovery.xml](behavior_trees/parallel_w_recovery.xml) that add recovery sub-trees to the navigation task.
-
-For example, in the `simple_sequential` version, there is node, **IsStuck** that checks whether the robot is no longer making progress toward its goal pose. If this condition is detected, a few maneuvers - **Stop**, **BackUp**, and **Spin** - are executed to attempt to free up the robot.
-
-<img src="./doc/recovery3.png" title="" width="85%" align="middle">
-<br/>
-
-And in the `parallel` version, only the navigation branch is modified while the recovery branch remains the same. Notice how this allows for independent development.
-
-<br/>
-<img src="./doc/recovery4.png" title="" width="85%" align="middle">
-<br/>
-
-### AutoLocalization Behavior Tree
-**Warning**: AutoLocalization actuates robot; currently, obstacle avoidance has not been integrated into this feature. The user is advised to not use this feature on a physical robot for safety reasons.  As of now, this feature should only be used in simulations.
-
-[auto_localization.xml](behavior_trees/auto_localization.xml) Allows differential type robot to automatically localize its initial position when Nav Goal command is given to the robot without the initial pose.
-
-
-Below is the `xml` representation of the tree.
-```XML
-<root main_tree_to_execute="MainTree">
-  <BehaviorTree ID="MainTree">
-    <FallbackStar name="root_AutoLocalization">
-      <initialPoseReceived/>
-      <SequenceStar name="doSelfLocalization">
-        <RetryUntilSuccesful num_attempts="5" name="retry_client_request">
-          <globalLocalizationServiceRequest/>
-        </RetryUntilSuccesful>
-        <RetryUntilSuccesful num_attempts="10" name="retry_localization">
-          <Sequence>
-            <Fallback>
-              <IsLocalized/>
-              <SequenceStar>
-               <Spin/>
-               <BackUp/>
-               <Spin/>
-             </SequenceStar>
-            </Fallback>
-            <IsLocalized/>
-          </Sequence>
-        </RetryUntilSuccesful>
-      </SequenceStar>
-    </FallbackStar>
-  </BehaviorTree>
-</root>
-```
-
-Image below depicts the graphical version of this Behavior Tree:
-<img src="./doc/auto_localization.png" title="AutoLocalization branch of the Navigation Behavior Tree" width="60%" align="middle">
-
-AutoLocalization branch is composed of the following condition and action nodes:
+#### Decorator Nodes
+* RateController: A custom control flow node, which throttles down the tick rate.  This custom node has only one child and its tick rate is defined with a pre-defined frequency that the user can set.  This node returns RUNNING when it is not ticking its child. Currently, in the navigation, the `RateController` is used to tick the  `ComputePathToPose` and `GoalReached` node at 1 Hz.
 
 #### Condition Nodes
-* initialPoseReceived: Checks `initial_pose` topic to determine if the initial pose has been received. Upon completion, this node returns either Success or Failure.
-* isLocalized: Subscribes to `amcl_pose` and it checks the amcl pose covariance values for (x,y,rot) to determine if the robot is localized based on pre-defined tolerance. Upon completion, this node returns either Success or Failure.
+* GoalReached: Checks the distance to the goal, if the distance to goal is less than the pre-defined threshold, the tree returns SUCCESS, which in that case the `ComputePathToPose` action node will not get ticked.
+
 #### Action Nodes
-* globalLocalizationServiceRequest: Invokes a service call to amcl’s global localization to disperse particle cloud in free space of the map.
-* Spin: Rotates the robot by sending angular velocity commands. This node currently is time based; the control based method has not been implemented yet. It returns either Success, Failure, or Running.
-* BackUp: Backs up the robot by sending linear velocity commands in -x direction. This node currently is time based; the control based method has not been implemented yet. It returns either Success, Failure, or Running. Be advised that currently **obstacle avoidance** has not been integrated in the back up task yet.
+* ComputePathToPose: When this node is ticked, the goal will be placed on the blackboard which will be shared to the Behavior tree.  The bt action node would then utilizes the action server to send a request to the global planner to recompute the global path.  Once the global path is recomputed, the result will be sent back via action server and then the updated path will be placed on the blackboard. The `planner` parameter will tell the planning server which of the loaded planning plugins to utilize, in case of desiring different parameters, planners, or behaviors. The name of the planner should correspond with the high level task it accomplishes and align with the `planner_ids` name given to it in the planner server. If no planner name is provided, it will use the only planner in the planner server when only one is available.
 
-The AutoLocalization branch starts by first determining if the initial robot pose has been received or not. If there is an initial pose, it will simply return Success and the AutoLocalization will not proceed. On the other hand, if initial pose is not received, it will return failure which causes the doAutoLocalization SequenceStar node to invoke. In this branch, first, the globalLocalizationServiceRequest gets ticked to generate uniform particle cloud in the free space of the map. Then, robot starts to spin and back up while simultaneously isLocalized node checks to determine if the robot is localized. If the robot location cannot be determined, the retry node will attempt the AutoLocalization process with pre-determined number of tries. Once the robot is localized, the tree will return success. If the robot is not localized by attempting all the retries, AutoLocalization branch will return Failure.
+The graphical version of this Behavior Tree:
 
-To run AutoLocalization branch, the `bt_navigator_params.yaml` file needs to be modified to include `auto_localization.xml` file. To run AutoLocalization with Recovery and Parallel Planning and Control, the `auto_localization_w_parallel_recovery.xml` needs to be included in the `bt_navigator_params.yaml` file.
+<img src="./doc/simple_parallel.png" title="" width="65%" align="middle">
+<br/>
 
-Image below depicts the graphical version of the complete Navigation Task with AutoLocalization, Recovery, Parallel Planning and Control Behavior Tree:
+The navigate with replanning BT first ticks the `RateController` node which specifies how frequently the `GoalReached` and `ComputePathToPose` should be invoked. Then the `GoalReached` nodes check the distance to the goal to determine if the `ComputePathToPose` should be ticked or not. The `ComputePathToPose` gets the incoming goal pose from the blackboard, computes the path and puts the result back on the blackboard, where `FollowPath` picks it up. Each time a new path is computed, the blackboard gets updated and then `FollowPath` picks up the new goal to compute a control effort for. `controller_id` will specify the type of control effort you'd like to compute such as `FollowPath` `FollowPathSlow` `FollowPathExactly`, etc.
 
-<img src="./doc/AutoLocalization_w_recovery_parallel.png" title="Navigation Behavior Tree with AutoLocalization, Recovery, and Planning & Control" width="70%" align="middle">
+### Navigate with replanning and simple recovery actions
+
+With the recovery node, simple recoverable navigation with replanning can be implemented by utilizing the [navigate_w_replanning.xml](behavior_trees/navigate_w_replanning.xml) and a sequence of recovery actions. Our custom behavior actions for recovery are:  `clearEntirelyCostmapServiceRequest` for both global and local costmaps and `spin`. A graphical version of this simple recoverable Behavior Tree is depicted in the figure below.
+
+<img src="./doc/parallel_w_recovery.png" title="" width="95%" align="middle">
+<br/>
 
 
+This tree is currently our default tree in the stack and the xml file is located here: [navigate_w_replanning_and_recovery.xml](behavior_trees/navigate_w_replanning_and_recovery.xml).
 
-## Creating custom Behavior Tree nodes
+## Multi-Scope Recoveries
+Scope-based failure handling: Utilizing Behavior Trees with a recovery node allows one to handle failures at multiple scopes. With this capability, any action in a large system can be constructed with specific recovery actions suitable for that action. Thus, failures in these actions can be handled locally within the scope. With such design, a system can be recovered at multiple levels based on the nature of the failure. Higher level recovery actions could be recovery actions such as re-initializing the system, re-calibrating the robot, bringing the system to a good known state, etc.
 
-A Behavior Tree consists of various kinds of nodes: control flow nodes, such as fallback, sequence, parallel, and decorator, as well as condition and action nodes. The current Navigation2 software implements a few custom nodes, including Conditions and Actions. The user can also define and register additional node types that can then be used in BTs and the corresponding XML descriptions. See the code for examples.
+### Navigate with replanning and simple Multi-Scope Recoveries
+In the navigation stack, multi-scope recovery actions are implemented for each module.  Currently, the recovery actions for the Global planner are: Clear Entire Global Costmap and Wait.  The recovery actions for the Local planner are: Clear Entire Local Costmap and Spin; the recovery actions for the system level is just Wait. The figure below highlights a simple multi-scope recovery handling for the navigation task.  With this tree, if the Global Planner fails, the ClearEntireCostmap which is the first recovery action for this module will be ticked, then the ComputePathToPose will be ticked again. If the ComputePathToPose fails again, the Wait which is the second recovery action for this module will be ticked. After trying the second recovery action, the ComputePathToPose will be ticked again. These actions can be repeated n times until ComputePathToPose succeeds.  If the ComputePathToPose fails and the Global Planner cannot be recovered locally, the higher-level recovery actions will be ticked.  In this simple example, our higher-level recovery action is just a longer wait. The same strategy is applied to the Local Planner. If the Local Planner fails, the tree will first tick the ClearEntireCostmap and then if it fails again the tree will tick the Spin.
+
+<img src="./doc/parallel_w_round_robin_recovery.png" title="" width="95%" align="middle">
+<br/>
+
+This tree currently is not our default tree in the stack. The xml file is located here: [navigate_w_replanning_and_round_robin_recovery.xml](behavior_trees/navigate_w_replanning_and_round_robin_recovery.xml).
 
 ## Open Issues
 
 * **Schema definition and XML document validation** - Currently, there is no dynamic validation of incoming XML. The Behavior-Tree.CPP library is using tinyxml2, which doesn't have a validator. Instead, we can create a schema for the Mission Planning-level XML and use build-time validation of the XML input to ensure that it is well-formed and valid.
+
+## Legend
+Legend for the behavior tree diagrams:
+
+![Legend](./doc/legend.png)

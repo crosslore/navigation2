@@ -34,11 +34,11 @@ DummyController::DummyController()
   vel_pub_ =
     this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
-  task_server_ = std::make_unique<nav2_tasks::FollowPathTaskServer>(temp_node, false),
+  task_server_ = std::make_unique<nav2_behavior_tree::FollowPathTaskServer>(temp_node, false),
   task_server_->setExecuteCallback(
     std::bind(&DummyController::followPath, this, std::placeholders::_1));
 
-  // Start listening for incoming ComputePathToPose task requests
+  // Start listening for incoming ComputePathToPose action server requests
   task_server_->start();
 
   RCLCPP_INFO(get_logger(), "Initialized DummyController");
@@ -50,7 +50,7 @@ DummyController::~DummyController()
 }
 
 void
-DummyController::followPath(const nav2_tasks::FollowPathCommand::SharedPtr /*command*/)
+DummyController::followPath(const nav2_behavior_tree::FollowPathCommand::SharedPtr /*command*/)
 {
   RCLCPP_INFO(get_logger(), "Starting controller ");
 
@@ -87,7 +87,7 @@ DummyController::followPath(const nav2_tasks::FollowPathCommand::SharedPtr /*com
     }
   }
 
-  nav2_tasks::FollowPathResult result;
+  nav2_behavior_tree::FollowPathResult result;
   task_server_->setResult(result);
 }
 

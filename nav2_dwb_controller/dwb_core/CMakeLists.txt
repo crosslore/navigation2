@@ -16,6 +16,7 @@ find_package(nav_2d_utils REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(nav2_core REQUIRED)
 
 nav2_package()
 
@@ -37,6 +38,7 @@ set(dependencies
   nav_msgs
   tf2_ros
   nav2_util
+  nav2_core
 )
 
 add_library(dwb_core SHARED
@@ -44,6 +46,10 @@ add_library(dwb_core SHARED
   src/publisher.cpp
   src/illegal_trajectory_tracker.cpp
 )
+
+# prevent pluginlib from using boost
+target_compile_definitions(dwb_core PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
+
 ament_target_dependencies(dwb_core
   ${dependencies}
 )
@@ -68,5 +74,7 @@ endif()
 ament_export_include_directories(include)
 ament_export_libraries(dwb_core)
 ament_export_dependencies(${dependencies})
+
+pluginlib_export_plugin_description_file(nav2_core local_planner_plugin.xml)
 
 ament_package()

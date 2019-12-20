@@ -20,6 +20,7 @@
 #include "nav2_util/node_utils.hpp"
 #include "nav2_util/simple_action_server.hpp"
 #include "test_msgs/action/fibonacci.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 using Fibonacci = test_msgs::action::Fibonacci;
 using GoalHandle = rclcpp_action::ServerGoalHandle<Fibonacci>;
@@ -41,10 +42,34 @@ public:
 
   void on_init()
   {
-    action_server_ = std::make_shared<nav2_util::SimpleActionServer<Fibonacci>>(
+    action_server_ = std::make_unique<nav2_util::SimpleActionServer<Fibonacci>>(
       shared_from_this(),
       "fibonacci",
-      std::bind(&FibonacciServerNode::execute, this, std::placeholders::_1));
+      std::bind(&FibonacciServerNode::execute, this));
+
+    deactivate_subs_ = create_subscription<std_msgs::msg::Empty>(
+      "deactivate_server",
+      1,
+      [this](std_msgs::msg::Empty::UniquePtr /*msg*/) {
+        RCLCPP_INFO(this->get_logger(), "Deactivating");
+        action_server_->deactivate();
+      });
+
+    activate_subs_ = create_subscription<std_msgs::msg::Empty>(
+      "activate_server",
+      1,
+      [this](std_msgs::msg::Empty::UniquePtr /*msg*/) {
+        RCLCPP_INFO(this->get_logger(), "Activating");
+        action_server_->activate();
+      });
+
+    omit_preempt_subs_ = create_subscription<std_msgs::msg::Empty>(
+      "omit_preemption",
+      1,
+      [this](std_msgs::msg::Empty::UniquePtr /*msg*/) {
+        RCLCPP_INFO(this->get_logger(), "Ignoring preemptions");
+        do_premptions_ = false;
+      });
   }
 
   void on_term()
@@ -52,16 +77,13 @@ public:
     action_server_.reset();
   }
 
-  void execute(const std::shared_ptr<GoalHandle> goal_handle)
+  void execute()
   {
-    // The goal may be pre-empted, so keep a pointer to the current goal
-    std::shared_ptr<GoalHandle> current_goal_handle = goal_handle;
-
     rclcpp::Rate loop_rate(10);
 
 preempted:
     // Initialize the goal, feedback, and result
-    auto goal = current_goal_handle->get_goal();
+    auto goal = action_server_->get_current_goal();
     auto feedback = std::make_shared<Fibonacci::Feedback>();
     auto result = std::make_shared<Fibonacci::Result>();
 
@@ -71,16 +93,16 @@ preempted:
     sequence.push_back(1);
 
     for (int i = 1; (i < goal->order) && rclcpp::ok(); ++i) {
-      // Check if this action has been canceled
-      if (current_goal_handle->is_canceling()) {
+      // Should be check periodically if this action has been canceled
+      // or if the server has been deactivated.
+      if (action_server_->is_cancel_requested() || !action_server_->is_server_active()) {
         result->sequence = sequence;
-        current_goal_handle->canceled(result);
         return;
       }
 
       // Check if we've gotten an new goal, pre-empting the current one
-      if (action_server_->preempt_requested()) {
-        current_goal_handle = action_server_->get_updated_goal_handle();
+      if (do_premptions_ && action_server_->is_preempt_requested()) {
+        action_server_->accept_pending_goal();
         goto preempted;
       }
 
@@ -88,19 +110,24 @@ preempted:
       sequence.push_back(sequence[i] + sequence[i - 1]);
 
       // Publish feedback
-      current_goal_handle->publish_feedback(feedback);
+      action_server_->publish_feedback(feedback);
       loop_rate.sleep();
     }
 
     // Check if goal is done
     if (rclcpp::ok()) {
       result->sequence = sequence;
-      current_goal_handle->succeed(result);
+      action_server_->succeeded_current(result);
     }
   }
 
 private:
-  std::shared_ptr<nav2_util::SimpleActionServer<Fibonacci>> action_server_;
+  std::unique_ptr<nav2_util::SimpleActionServer<Fibonacci>> action_server_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr deactivate_subs_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr activate_subs_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr omit_preempt_subs_;
+
+  bool do_premptions_{true};
 };
 
 class RclCppFixture
@@ -145,6 +172,10 @@ public:
   {
     action_client_ = rclcpp_action::create_client<Fibonacci>(shared_from_this(), "fibonacci");
     action_client_->wait_for_action_server();
+
+    deactivate_pub_ = this->create_publisher<std_msgs::msg::Empty>("deactivate_server", 1);
+    activate_pub_ = this->create_publisher<std_msgs::msg::Empty>("activate_server", 1);
+    omit_prempt_pub_ = this->create_publisher<std_msgs::msg::Empty>("omit_preemption", 1);
   }
 
   void on_term()
@@ -152,7 +183,25 @@ public:
     action_client_.reset();
   }
 
+  void deactivate_server()
+  {
+    deactivate_pub_->publish(std_msgs::msg::Empty());
+  }
+
+  void activate_server()
+  {
+    activate_pub_->publish(std_msgs::msg::Empty());
+  }
+
+  void omit_server_preemptions()
+  {
+    omit_prempt_pub_->publish(std_msgs::msg::Empty());
+  }
+
   rclcpp_action::Client<Fibonacci>::SharedPtr action_client_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr deactivate_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr activate_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr omit_prempt_pub_;
 };
 
 class ActionTest : public ::testing::Test
@@ -247,4 +296,156 @@ TEST_F(ActionTest, test_simple_action_with_feedback)
 
   ASSERT_EQ(sum, 143);
   ASSERT_GE(feedback_sum, 0);  // We should have received *some* feedback
+}
+
+TEST_F(ActionTest, test_simple_action_activation_cycling)
+{
+  // The goal for this invocation
+  auto goal = Fibonacci::Goal();
+
+  // Sending a goal that will take a long time to calculate
+  goal.order = 12'000'000;
+
+  // Start by sending goal on an active server
+
+  // Send the goal
+  auto future_goal_handle = node_->action_client_->async_send_goal(goal);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // Deactivate while running
+  node_->deactivate_server();
+
+  auto goal_handle = future_goal_handle.get();
+
+  // Wait for the result
+  auto future_result = node_->action_client_->async_get_result(goal_handle);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_, future_result),
+    rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // The action should be reported as aborted.
+  ASSERT_EQ(future_result.get().code, rclcpp_action::ResultCode::ABORTED);
+
+  // Cycle back to active
+  node_->activate_server();
+
+  goal.order = 12;
+
+  // Send the goal
+  future_goal_handle = node_->action_client_->async_send_goal(goal);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  goal_handle = future_goal_handle.get();
+
+  // Wait for the result
+  future_result = node_->action_client_->async_get_result(goal_handle);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_, future_result),
+    rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // Now the action should have been successfully executed.
+  ASSERT_EQ(future_result.get().code, rclcpp_action::ResultCode::SUCCEEDED);
+}
+
+TEST_F(ActionTest, test_simple_action_preemption)
+{
+  // The goal for this invocation
+  auto goal = Fibonacci::Goal();
+
+  // Sending a goal that will take a long time to calculate
+  goal.order = 12'000'000;
+
+  // Send the goal
+  auto future_goal_handle = node_->action_client_->async_send_goal(goal);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // Preempt the goal
+  auto preemption_goal = Fibonacci::Goal();
+  preemption_goal.order = 1;
+
+  // Send the goal
+  future_goal_handle = node_->action_client_->async_send_goal(preemption_goal);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  auto goal_handle = future_goal_handle.get();
+
+  // Wait for the result
+  auto future_result = node_->action_client_->async_get_result(goal_handle);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_, future_result),
+    rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // The final result
+  rclcpp_action::ClientGoalHandle<Fibonacci>::WrappedResult result = future_result.get();
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+
+  // Sum all of the values in the requested fibonacci series
+  int sum = 0;
+  for (auto number : result.result->sequence) {
+    sum += number;
+  }
+
+  ASSERT_EQ(sum, 1);
+}
+
+TEST_F(ActionTest, test_simple_action_preemption_after_succeeded)
+{
+  // Test race condition between successfully completing an action and receiving a preemption.
+  auto goal = Fibonacci::Goal();
+  goal.order = 20;
+
+  auto preemption = Fibonacci::Goal();
+  preemption.order = 1;
+
+  // Send the goal
+  auto future_goal_handle = node_->action_client_->async_send_goal(goal);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  node_->omit_server_preemptions();
+
+  auto future_preempt_handle = node_->action_client_->async_send_goal(preemption);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_,
+    future_goal_handle), rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // Get the results
+  auto goal_handle = future_goal_handle.get();
+
+  // Wait for the result of initial goal
+  auto future_result = node_->action_client_->async_get_result(goal_handle);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_, future_result),
+    rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // The final result
+  rclcpp_action::ClientGoalHandle<Fibonacci>::WrappedResult result = future_result.get();
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+
+  // Sum all of the values in the requested fibonacci series
+  int sum = 0;
+  for (auto number : result.result->sequence) {
+    sum += number;
+  }
+
+  ASSERT_EQ(sum, 17710);
+
+  // Now get the preemption result
+  goal_handle = future_preempt_handle.get();
+
+  // Wait for the result of initial goal
+  future_result = node_->action_client_->async_get_result(goal_handle);
+  ASSERT_EQ(rclcpp::spin_until_future_complete(node_, future_result),
+    rclcpp::executor::FutureReturnCode::SUCCESS);
+
+  // The final result
+  result = future_result.get();
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+
+  // Sum all of the values in the requested fibonacci series
+  sum = 0;
+  for (auto number : result.result->sequence) {
+    sum += number;
+  }
+
+  ASSERT_EQ(sum, 1);
 }

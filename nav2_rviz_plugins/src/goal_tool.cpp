@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 
+#include "nav2_rviz_plugins/goal_common.hpp"
 #include "rviz_common/display_context.hpp"
 #include "rviz_common/load_resource.hpp"
 
@@ -27,9 +28,6 @@ GoalTool::GoalTool()
 : rviz_default_plugins::tools::PoseTool()
 {
   shortcut_key_ = 'g';
-
-  navigation_dialog_ = std::make_unique<NavigationDialog>();
-  navigation_dialog_->move(0, 0);
 }
 
 GoalTool::~GoalTool()
@@ -40,18 +38,14 @@ void GoalTool::onInitialize()
 {
   PoseTool::onInitialize();
   setName("Navigation2 Goal");
-  setIcon(rviz_common::loadPixmap("package://nav2_rviz_plugins/icons/SetGoal.png"));
+  setIcon(rviz_common::loadPixmap("package://rviz_default_plugins/icons/classes/SetGoal.png"));
 }
 
 void
 GoalTool::onPoseSet(double x, double y, double theta)
 {
-  std::string fixed_frame = context_->getFixedFrame().toStdString();
-
-  navigation_dialog_->startNavigation(x, y, theta, fixed_frame);
-  navigation_dialog_->show();
-  navigation_dialog_->raise();
-  navigation_dialog_->activateWindow();
+  // Set goal pose on global object GoalUpdater to update nav2 Panel
+  GoalUpdater.setGoal(x, y, theta, context_->getFixedFrame());
 }
 
 }  // namespace nav2_rviz_plugins

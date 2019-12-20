@@ -40,6 +40,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_util/lifecycle_node.hpp"
+#include "nav2_util/node_utils.hpp"
 
 // TODO(crdelsey): Remove when code is re-enabled
 #pragma GCC diagnostic push
@@ -71,8 +72,10 @@ param_t searchAndGetParam(
   //   nh->param(resolved_name, value, default_value);
   //   return value;
   // }
-  param_t value = 0;
-  nh->get_parameter_or(param_name, value, default_value);
+  param_t value;
+  nav2_util::declare_parameter_if_not_declared(nh, param_name,
+    rclcpp::ParameterValue(default_value));
+  nh->get_parameter(param_name, value);
   return value;
 }
 
@@ -143,18 +146,15 @@ void moveParameter(
 {
   param_t value;
   if (nh->get_parameter(current_name, value)) {
-    // TODO(crdelsey): What's the ROS 2 equivalent of deleteParam?
-    // if (should_delete)
-    //   nh->deleteParam(old_name);
+    if (should_delete) {nh->undeclare_parameter(old_name);}
     return;
   }
   if (nh->get_parameter(old_name, value)) {
-    // TODO(crdelsey): What's the ROS 2 equivalent of deleteParam?
-    // if (should_delete) nh->deleteParam(old_name);
+    if (should_delete) {nh->undeclare_parameter(old_name);}
   } else {
     value = default_value;
   }
-  nh->set_parameters({rclcpp::Parameter(current_name, value)});
+  nh->set_parameter(rclcpp::Parameter(current_name, value));
 }
 
 
